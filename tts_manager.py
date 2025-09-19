@@ -1,40 +1,43 @@
+
 import threading
 import queue
 import time
-import os
 import warnings
 from typing import Callable, Optional
+
+import requests
+
+AVATAR_URL = "http://localhost:8000/set_state"
+
+def set_avatar_state(state: str):
+    """Отправляет команду аватару для смены состояния."""
+    try:
+        requests.post(AVATAR_URL, json={"state": state}, timeout=0.1)
+    except requests.exceptions.RequestException:
+        pass
+
 from RealtimeTTS import TextToAudioStream, EdgeEngine
 from config import Config
 
 _tts_initialized = False
 
 class TTSManager:
-    def __init__(self, on_playback_finished: Optional[Callable] = None):
-        """
-        Инициализация TTS Manager
-        on_playback_finished: callback который вызывается когда закончилось воспроизведение
-        """
+    def __init__(self):
         global _tts_initialized
-        
         if _tts_initialized:
             print("Warning: TTS уже инициализирован")
-        
         _tts_initialized = True
         
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            
             self.engine = EdgeEngine(
                 rate=Config.TTS_RATE,
                 pitch=Config.TTS_PITCH,
                 volume=Config.TTS_VOLUME
             )
-            
             self.stream = TextToAudioStream(self.engine)
             self.engine.set_voice(Config.TTS_VOICE)
         
-        self.on_playback_finished = on_playback_finished
         self.is_playing = False
         self.text_queue = queue.Queue()
         self.stop_requested = False
@@ -42,52 +45,54 @@ class TTSManager:
         self.worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
         self.worker_thread.start()
         
-    def speak_text(self, text: str):
-        """Добавить текст в очередь на озвучку"""
+        set_avatar_state("typing")
+
+    def speak_text(self, text: str, on_finish: Optional[Callable] = None):
+        """Добавить текст и опциональный колбэк в очередь на озвучку"""
         if text.strip():
-            self.text_queue.put(text.strip())
-    
-    def speak_text_blocking(self, text: str):
-        """Озвучить текст синхронно (блокирующий вызов)"""
-        if not text.strip():
-            return
-            
-        self.is_playing = True
-        try:
-            def single_text_generator():
-                yield text.strip()
-            
-            self.stream.feed(single_text_generator()).play()
-            
-        finally:
-            self.is_playing = False
-            if self.on_playback_finished:
-                self.on_playback_finished()
-    
+            self.text_queue.put((text.strip(), on_finish))
+
     def _worker_loop(self):
-        """Основной цикл обработки очереди текстов"""
+        """Основной цикл обработки очереди текстов с управлением аватаром"""
         while not self.stop_requested:
             try:
-                text = self.text_queue.get(timeout=1.0)
+                text, on_finish_callback = self.text_queue.get(timeout=1.0)
                 
                 if text and not self.stop_requested:
-                    self.speak_text_blocking(text)
-                    
+                    self.is_playing = True
+                    try:
+                        set_avatar_state("speaking")
+
+                        def single_text_generator():
+                            yield text
+                        self.stream.feed(single_text_generator()).play()
+
+                    finally:
+                        self.is_playing = False
+                        
+                        if self.text_queue.empty():
+                             set_avatar_state("typing")
+
+                        if on_finish_callback:
+                            print(f"🎤 TTS: Фраза завершена, вызываю персональный колбэк...")
+                            on_finish_callback()
+                            
                 self.text_queue.task_done()
                 
             except queue.Empty:
+                if not self.is_playing:
+                    set_avatar_state("typing")
                 continue
             except Exception as e:
                 print(f"TTS Worker Error: {e}")
-                if self.on_playback_finished:
-                    self.on_playback_finished()
-    
+                set_avatar_state("typing")
+
     def is_currently_playing(self) -> bool:
-        """Проверить, идет ли сейчас воспроизведение"""
-        return self.is_playing or self.stream.is_playing()
-    
+        """Проверить, идет ли сейчас воспроизведение ИЛИ есть что-то в очереди"""
+        return self.is_playing or not self.text_queue.empty()
+
     def stop_playback(self):
-        """Остановить текущее воспроизведение"""
+        """Остановить текущее воспроизведение и очистить очередь"""
         try:
             self.stream.stop()
             while not self.text_queue.empty():
@@ -96,8 +101,10 @@ class TTSManager:
                     self.text_queue.task_done()
                 except queue.Empty:
                     break
+            set_avatar_state("typing")
         except Exception as e:
             print(f"Error stopping TTS: {e}")
+            set_avatar_state("typing")
     
     def pause_playback(self):
         """Приостановить воспроизведение"""

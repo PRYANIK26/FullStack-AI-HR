@@ -112,12 +112,15 @@ class DatabaseManager:
                 end_time TIMESTAMP,
                 duration_seconds INTEGER,
                 total_questions INTEGER DEFAULT 0,
-                interview_plan TEXT,
-                final_scores TEXT,
+                interview_plan TEXT,  -- JSON
+                final_scores TEXT,    -- JSON
                 final_recommendation TEXT,
                 interviewer_notes TEXT,
-                phase_breakdown TEXT,
-                adaptive_insights TEXT,
+                phase_breakdown TEXT, -- JSON
+                adaptive_insights TEXT, -- JSON
+                repetition_analysis TEXT, -- JSON - НОВОЕ ПОЛЕ
+                timing_statistics TEXT, -- JSON - НОВОЕ ПОЛЕ  
+                advanced_analytics TEXT, -- JSON - НОВОЕ ПОЛЕ
                 status TEXT DEFAULT 'active',
                 FOREIGN KEY (analysis_id) REFERENCES analyses (id)
             )
@@ -139,11 +142,41 @@ class DatabaseManager:
                 depth_score INTEGER,
                 confidence_score INTEGER,
                 practical_experience INTEGER,
-                red_flags TEXT,
-                strengths_shown TEXT,
+                red_flags TEXT,  -- JSON
+                strengths_shown TEXT,  -- JSON
                 analysis_notes TEXT,
+                knowledge_gaps TEXT,  -- JSON - НОВОЕ ПОЛЕ
+                adaptation_needed TEXT,  -- НОВОЕ ПОЛЕ
+                repetition_detected BOOLEAN DEFAULT FALSE,  -- НОВОЕ ПОЛЕ
+                alternative_strategy_used TEXT,  -- НОВОЕ ПОЛЕ
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (interview_id) REFERENCES interviews (id)
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS interview_timing (
+                id TEXT PRIMARY KEY,
+                interview_id TEXT NOT NULL,
+                question_number INTEGER,
+                question_start_time TIMESTAMP,
+                answer_duration_seconds INTEGER,
+                analysis_duration_seconds INTEGER,
+                phase TEXT,
+                time_status TEXT,  -- on_track, need_acceleration, critical_time
+                remaining_minutes INTEGER,
+                FOREIGN KEY (interview_id) REFERENCES interviews (id)
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS final_evaluations (
+                id TEXT PRIMARY KEY,
+                analysis_id TEXT NOT NULL UNIQUE,
+                evaluation_summary TEXT,
+                final_recommendation TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (analysis_id) REFERENCES analyses (id)
             )
         ''')
 
@@ -243,11 +276,13 @@ class DatabaseManager:
                 a.created_at,
                 v.title as vacancy_title, 
                 c.name as candidate_name,
-                MAX(i.id) as interview_id -- Используем MAX чтобы сгруппировать дубликаты интервью
+                MAX(i.id) as interview_id, -- Используем MAX чтобы сгруппировать дубликаты интервью
+                fe.id as final_evaluation_id
             FROM analyses a
             JOIN vacancies v ON a.vacancy_id = v.id
             JOIN candidates c ON a.candidate_id = c.id
             LEFT JOIN interviews i ON a.id = i.analysis_id AND i.status = 'completed'
+            LEFT JOIN final_evaluations fe ON a.id = fe.analysis_id
             GROUP BY a.id -- ГРУППИРУЕМ по ID анализа, чтобы убрать дубликаты
             ORDER BY a.created_at DESC
         ''')
@@ -293,15 +328,33 @@ class DatabaseManager:
                 a.*, 
                 v.title as vacancy_title, 
                 c.name as candidate_name,
-                i.id as interview_id
+                i.id as interview_id,
+                fe.id as final_evaluation_id
             FROM analyses a
             JOIN vacancies v ON a.vacancy_id = v.id
             JOIN candidates c ON a.candidate_id = c.id
             LEFT JOIN interviews i ON a.id = i.analysis_id AND i.status = 'completed'
+            LEFT JOIN final_evaluations fe ON a.id = fe.analysis_id
             WHERE v.title LIKE ? OR c.name LIKE ? OR a.recommendation LIKE ?
             ORDER BY a.created_at DESC
         ''', (f'%{search_term}%', f'%{search_term}%', f'%{search_term}%'))
         return cursor.fetchall()
+
+    def save_final_evaluation(self, analysis_id, summary, recommendation):
+        """Сохранение финального заключения"""
+        eval_id = str(uuid.uuid4())
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "INSERT OR REPLACE INTO final_evaluations (id, analysis_id, evaluation_summary, final_recommendation) VALUES (?, ?, ?, ?)",
+            (eval_id, analysis_id, summary, recommendation)
+        )
+        self.conn.commit()
+
+    def get_final_evaluation(self, analysis_id):
+        """Получение финального заключения"""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM final_evaluations WHERE analysis_id = ?", (analysis_id,))
+        return cursor.fetchone()
 
 class CandidateEvaluator:
     def __init__(self):
@@ -649,12 +702,11 @@ class CandidateEvaluator:
         """Отправка запроса к GPT-5 с заранее определенной отраслью"""
         try:
             response = self.client.chat.completions.create(
-                model="gpt-5",
+                model="gpt-5-mini",
                 messages=[
                     {"role": "system", "content": "Ты - элитный HR-эксперт международного уровня с глубокой экспертизой в оценке талантов."},
                     {"role": "user", "content": self.create_evaluation_prompt(resume_text, vacancy_text, industry)}
                 ],
-                reasoning_effort="high"
             )
             result_text = response.choices[0].message.content
             
@@ -671,6 +723,54 @@ class CandidateEvaluator:
                 
         except Exception as e:
             return {"error": f"Ошибка API: {str(e)}"}
+
+    def create_final_evaluation_prompt(self, vacancy_text, resume_text, interview_log):
+        """НОВЫЙ ПРОМПТ для финального заключения"""
+        return f"""
+Ты - главный HR-директор с 20-летним опытом, принимающий финальное решение о найме.
+Тебе предоставлены все данные о кандидате: описание вакансии, его резюме, первичный AI-анализ и полный протокол технического интервью, проведенного AI-ассистентом.
+
+ТВОЯ ЗАДАЧА: Проанализировать ВСЕ предоставленные материалы и дать финальное, комплексное заключение.
+
+=== ВАКАНСИЯ ===
+{vacancy_text}
+
+=== РЕЗЮМЕ КАНДИДАТА ===
+{resume_text}
+
+=== ПРОТОКОЛ ТЕХНИЧЕСКОГО ИНТЕРВЬЮ ===
+{interview_log}
+
+=== АНАЛИЗ ===
+Проведи глубокий анализ, ответив на следующие вопросы:
+1.  **Соответствие резюме и интервью:** Подтвердились ли сильные стороны, заявленные в резюме, в ходе интервью? Были ли выявлены расхождения?
+2.  **Техническая глубина:** Насколько глубоко кандидат понимает технологии, о которых говорит? Приводит ли он конкретные примеры или отвечает поверхностно?
+3.  **Soft Skills:** Как кандидат ведет себя в диалоге? Уверенно? Структурированно? Способен ли признавать незнание? Как реагирует на сложные вопросы?
+4.  **Ключевые "зеленые флаги":** Какие моменты в интервью однозначно говорят в пользу кандидата (например, успешное решение сложной задачи, демонстрация глубокой экспертизы)?
+5.  **Ключевые "красные флаги":** Какие ответы или моменты вызывают наибольшее беспокойство?
+6.  **Итоговая рекомендация:** Учитывая все "за" и "против", какое твое финальное решение?
+
+=== ФОРМАТ ОТВЕТА ===
+Верни ТОЛЬКО JSON объект следующей структуры:
+{{
+    "evaluation_summary": "Твое развернутое заключение в нескольких абзацах, где ты отвечаешь на все 6 вопросов анализа. Говори профессионально, но понятно.",
+    "final_recommendation": "ОДНО ИЗ: 'hire' (нанять) или 'no_hire' (отказать)"
+}}
+"""
+
+    def get_final_evaluation(self, vacancy_text, resume_text, interview_log):
+        """Получить финальное заключение от GPT"""
+        try:
+            prompt = self.create_final_evaluation_prompt(vacancy_text, resume_text, interview_log)
+            response = self.client.chat.completions.create(
+                model="gpt-5-mini",
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"}
+            )
+            result_text = response.choices[0].message.content
+            return json.loads(result_text)
+        except Exception as e:
+            return {"error": f"Ошибка API при получении финального заключения: {e}"}
 
 def create_score_gauge(score, title):
     """Создание круговой диаграммы оценки"""
@@ -702,11 +802,9 @@ def display_contact_section(contacts, candidate_id, analysis_data, db_manager):
     st.subheader("📞 Контактная информация")
     
     final_eval = analysis_data.get("final_evaluation", {})
-    recommendation = final_eval.get("recommendation", "unknown")
+    score = final_eval.get("total_score", 0)
     
-    positive_recommendations = ["strong_hire", "hire", "conditional_hire"]
-    
-    if recommendation in positive_recommendations:
+    if score >= 50:
         if f"edit_email_{candidate_id}" not in st.session_state:
             st.session_state[f"edit_email_{candidate_id}"] = False
         if f"edit_phone_{candidate_id}" not in st.session_state:
@@ -781,13 +879,11 @@ def display_contact_section(contacts, candidate_id, analysis_data, db_manager):
     
     return None
 
-def display_interview_toggle(analysis_id, current_status, contacts, recommendation, db_manager, analysis):
+def display_interview_toggle(analysis_id, current_status, contacts, score, db_manager, analysis):
     """Отображение переключателя статуса собеседования с отправкой запроса на сервер."""
     st.subheader("🎯 Статус собеседования")
     
-    positive_recommendations = ["strong_hire", "hire", "conditional_hire"]
-    
-    if recommendation in positive_recommendations:
+    if score >= 50:
         
         has_contacts = (contacts and (contacts.get('email') or contacts.get('telegram')))
         
@@ -846,25 +942,37 @@ def display_results(evaluation, show_full=True):
                 st.text(evaluation["raw_response"])
         return None
     
+    russian_names = {
+                    'mandatory_requirements': 'Обязательные требования',
+                    'professional_expertise': 'Профессиональная экспертиза', 
+                    'industry_specialization': 'Отраслевая специализация',
+                    'adaptability': 'Адаптивность'
+                    }
+    
     final_eval = evaluation.get("final_evaluation", {})
     detailed_scoring = evaluation.get("detailed_scoring", {})
     
     score = final_eval.get("total_score", 0)
-    recommendation = final_eval.get("recommendation", "unknown")
+    
+    if score >= 75:
+        recommendation = "strong_hire"
+    elif score >= 50:
+        recommendation = "hire"
+    else:
+        recommendation = "no_hire"
+    
     confidence = final_eval.get("confidence_level", "medium")
     
     if show_full:
         col1, col2, col3 = st.columns([2, 2, 3])
         
         with col1:
-            st.plotly_chart(create_score_gauge(score, f"Общая оценка: {score}/100"))
+            st.plotly_chart(create_score_gauge(score, f"Оценка резюме: {score}/100"))
         
         with col2:
             rec_map = {
                 "strong_hire": ("✅ НАСТОЯТЕЛЬНО РЕКОМЕНДУЮ", "НАНЯТЬ НЕМЕДЛЕННО"),
                 "hire": ("✅ РЕКОМЕНДУЮ", "НАНЯТЬ"),
-                "conditional_hire": ("⚠️ УСЛОВНАЯ РЕКОМЕНДАЦИЯ", "НАНЯТЬ С ОГОВОРКАМИ"),
-                "weak_hire": ("⚠️ СЛАБАЯ РЕКОМЕНДАЦИЯ", "РАССМОТРЕТЬ"),
                 "no_hire": ("❌ НЕ РЕКОМЕНДУЮ", "ОТКАЗАТЬ")
             }
             
@@ -873,9 +981,6 @@ def display_results(evaluation, show_full=True):
             if recommendation in ["strong_hire", "hire"]:
                 st.success(rec_text)
                 st.success(f"**{rec_action}**")
-            elif recommendation in ["conditional_hire", "weak_hire"]:
-                st.warning(rec_text)
-                st.warning(f"**{rec_action}**")
             else:
                 st.error(rec_text)
                 st.error(f"**{rec_action}**")
@@ -918,7 +1023,8 @@ def display_results(evaluation, show_full=True):
             for criterion, data in detailed_scoring.items():
                 if isinstance(data, dict) and "score" in data:
                     weight = data.get('weight', 0)
-                    criterion_name = criterion.replace('_', ' ').title()
+                    
+                    criterion_name = russian_names.get(criterion, criterion.replace('_', ' ').title())
                     scores_data.append({
                         "Критерий": f"{criterion_name}\n({weight}%)",
                         "Оценка": data["score"],
@@ -970,7 +1076,7 @@ def display_results(evaluation, show_full=True):
                 if score >= 80: color = "🟢"
                 elif score >= 60: color = "🟡"
                 else: color = "🔴"
-                criterion_name = criterion.replace('_', ' ').title()
+                criterion_name = russian_names.get(criterion, criterion.replace('_', ' ').title())
                 with st.expander(f"{color} {criterion_name} - {score}/100"):
                     st.write(reasoning)
     
@@ -1003,7 +1109,9 @@ def show_history_sidebar(db_manager):
         return None
     
     total_analyses = len(analyses)
-    hired_count = sum(1 for a in analyses if a['recommendation'] in ['hire', 'strong_hire'])
+    
+    hired_count = sum(1 for a in analyses if (a['total_score'] or 0) >= 50)
+    
     avg_score = sum(a['total_score'] or 0 for a in analyses) / total_analyses if total_analyses > 0 else 0
     
     st.sidebar.metric("Всего анализов", total_analyses)
@@ -1017,64 +1125,113 @@ def show_history_sidebar(db_manager):
     for analysis in analyses[:20]:
         created_at = datetime.fromisoformat(analysis['created_at'].replace('Z', '+00:00')).strftime("%d.%m.%Y %H:%M")
         
-        if analysis['recommendation'] in ['hire', 'strong_hire']:
+        if (analysis['total_score'] or 0) >= 50:
             emoji = "✅"
-        elif analysis['recommendation'] in ['conditional_hire', 'weak_hire']:
-            emoji = "⚠️"
         else:
             emoji = "❌"
         
         interview_emoji = "🎙️" if analysis['interview_id'] else ""
         
-        button_text = f"{emoji}{interview_emoji} {analysis['candidate_name'][:15]}...\n{analysis['vacancy_title'][:20]}...\n{created_at}"
+        final_eval_emoji = "🏆" if 'final_evaluation_id' in analysis.keys() and analysis['final_evaluation_id'] else ""
+        
+        button_text = f"{emoji}{interview_emoji}{final_eval_emoji} {analysis['candidate_name'][:15]}...\n{analysis['vacancy_title'][:20]}...\n{created_at}"
         
         if st.sidebar.button(button_text, key=f"analysis_{analysis['id']}", help=f"Балл: {analysis['total_score']}/100"):
             selected_analysis = analysis['id']
     
     return selected_analysis
 
-def display_interview_report(interview_data, qa_data):
+def display_interview_report(analysis_data, interview_data, qa_data, db_manager, evaluator):
     """Отображение полного отчета по собеседованию"""
     try:
         final_scores = json.loads(interview_data.get('final_scores', '{}'))
         phase_breakdown = json.loads(interview_data.get('phase_breakdown', '{}'))
-        adaptive_insights = json.loads(interview_data.get('adaptive_insights', '{}'))
-        recommendation_text = interview_data.get('final_recommendation', 'unknown')
+        
+        overall_score = final_scores.get('overall_score', 0)
+        
+        resume_score = analysis_data['total_score'] if 'total_score' in analysis_data.keys() else 0
 
-        col1, col2, col3 = st.columns([1, 1, 1])
+        if overall_score >= 50 and resume_score >= 50:
+            recommendation_text = "hire"
+        else:
+            recommendation_text = "no_hire"
+        
+        col1, col2, col3 = st.columns([2, 1, 2])
         with col1:
-            overall_score = final_scores.get('overall_score', 0)
-            st.plotly_chart(create_score_gauge(overall_score, "Итоговый балл"))
+            st.plotly_chart(create_score_gauge(overall_score, "Оценка за интервью"))
         with col2:
             st.metric("Длительность", f"{interview_data.get('duration_seconds', 0) // 60} мин")
             st.metric("Задано вопросов", interview_data.get('total_questions', 0))
         with col3:
             rec_map = {
-                "strong_hire": ("✅ Настоятельно рекомендую", "success"),
-                "hire": ("✅ Рекомендую", "success"),
-                "conditional_hire": ("⚠️ Условно", "warning"),
-                "no_hire": ("❌ Не рекомендую", "error")
+                "hire": ("✅ КАНДИДАТ ПОДХОДИТ", "success"),
+                "no_hire": ("❌ КАНДИДАТ НЕ ПОДХОДИТ", "error")
             }
             rec_text, rec_type = rec_map.get(recommendation_text, ("❓ Неопределено", "info"))
             
             if rec_type == "success":
                 st.success(rec_text)
-            elif rec_type == "warning":
-                st.warning(rec_text)
+                st.info(f"Оценка за резюме: {resume_score}/100\nОценка за интервью: {overall_score}/100")
             else:
                 st.error(rec_text)
+                st.warning(f"Оценка за резюме: {resume_score}/100\nОценка за интервью: {overall_score}/100")
+
+        st.markdown("---")
+
+        st.subheader("🏆 Финальное заключение по кандидату")
+        
+        final_evaluation = db_manager.get_final_evaluation(analysis_data['id'])
+
+        if final_evaluation:
+            st.success("Заключение было сгенерировано ранее:")
+            st.markdown(final_evaluation['evaluation_summary'])
+            if final_evaluation['final_recommendation'] == 'hire':
+                st.success("Итоговая рекомендация: **Нанять**")
+            else:
+                st.error("Итоговая рекомендация: **Отказать**")
+        
+        if st.button("🤖 Сгенерировать/обновить финальное заключение", key="generate_final_eval"):
+            with st.spinner("Анализирую все данные... Это может занять минуту..."):
+                vacancy_text = analysis_data['vacancy_content']
+                resume_text = analysis_data['candidate_resume']
+                
+                interview_log_parts = []
+                for qa in qa_data:
+                    interview_log_parts.append(f"Вопрос {qa['question_number']}: {qa['question_text']}")
+                    interview_log_parts.append(f"Ответ: {qa['answer_text']}")
+                    analysis_notes = qa['analysis_notes'] if 'analysis_notes' in qa.keys() and qa['analysis_notes'] else 'N/A'
+                    interview_log_parts.append(f"Анализ AI: {analysis_notes}\n")
+                interview_log = "\n".join(interview_log_parts)
+
+                result = evaluator.get_final_evaluation(vacancy_text, resume_text, interview_log)
+                
+                if "error" not in result:
+                    summary = result.get("evaluation_summary", "Не удалось сгенерировать заключение.")
+                    recommendation = result.get("final_recommendation", "no_hire")
+                    db_manager.save_final_evaluation(analysis_data['id'], summary, recommendation)
+                    st.success("Финальное заключение сохранено!")
+                    st.rerun()
+                else:
+                    st.error(result["error"])
 
         st.markdown("---")
 
         st.subheader("📈 Анализ по фазам интервью")
         if phase_breakdown:
             phase_data = []
+            phase_names = {
+                'exploration': 'Исследование',
+                'validation': 'Проверка', 
+                'stress_test': 'Стресс-тест',
+                'soft_skills': 'Софт скилы',
+                'wrap_up': 'Завершение'
+            }
             for phase, stats in phase_breakdown.items():
                 phase_data.append({
-                    "Фаза": phase.replace('_', ' ').title(),
-                    "Средний балл": stats.get('avg_score', 0),
-                    "Вопросов": stats.get('questions_asked', 0)
-                })
+                "Фаза": phase_names.get(phase, phase.replace('_', ' ').title()),
+                "Средний балл": stats.get('avg_score', 0),
+                "Вопросов": stats.get('questions_asked', 0)
+            })
             
             df = pd.DataFrame(phase_data)
             fig = px.bar(df, x="Фаза", y="Средний балл", text="Вопросов",
@@ -1102,8 +1259,9 @@ def display_interview_report(interview_data, qa_data):
                 analysis_cols[2].metric("Уверенность", f"{qa['confidence_score']}/10")
                 analysis_cols[3].metric("Глубина", f"{qa['depth_score']}/10")
                 
-                if qa.get('analysis_notes'):
-                    st.info(f"**Заметки интервьюера:** {qa['analysis_notes']}")
+                analysis_notes = qa['analysis_notes'] if 'analysis_notes' in qa.keys() and qa['analysis_notes'] else None
+                if analysis_notes:
+                    st.info(f"**Заметки интервьюера:** {analysis_notes}")
                 st.markdown("---")
 
     except (json.JSONDecodeError, KeyError) as e:
@@ -1112,6 +1270,7 @@ def display_interview_report(interview_data, qa_data):
 def show_analysis_details(db_manager, analysis_id):
     """Показать детали конкретного анализа с вкладкой для интервью"""
     analysis = db_manager.get_analysis_by_id(analysis_id)
+    evaluator = CandidateEvaluator()
     
     if not analysis:
         st.error("Анализ не найден")
@@ -1134,7 +1293,7 @@ def show_analysis_details(db_manager, analysis_id):
             display_resume_analysis(analysis, db_manager)
             
         with tab2:
-            display_interview_report(interview_data, qa_data)
+            display_interview_report(analysis, interview_data, qa_data, db_manager, evaluator)
             
     else:
         display_resume_analysis(analysis, db_manager)
@@ -1147,10 +1306,9 @@ def display_resume_analysis(analysis, db_manager):
         display_results(result_json, show_full=True)
         
         final_eval = result_json.get("final_evaluation", {})
-        recommendation = final_eval.get("recommendation", "unknown")
-        positive_recommendations = ["strong_hire", "hire", "conditional_hire"]
+        score = final_eval.get("total_score", 0)
 
-        if recommendation in positive_recommendations:
+        if score >= 50:
             st.markdown("---")
             
             contacts = {
@@ -1165,7 +1323,7 @@ def display_resume_analysis(analysis, db_manager):
             final_contacts = updated_contacts or contacts
             current_interview_status = analysis['needs_interview']
             
-            display_interview_toggle(analysis['id'], current_interview_status, final_contacts, recommendation, db_manager, analysis)
+            display_interview_toggle(analysis['id'], current_interview_status, final_contacts, score, db_manager, dict(analysis))
         
     except json.JSONDecodeError:
         st.error("Ошибка при загрузке данных анализа")
@@ -1279,8 +1437,8 @@ def show_multiple_resumes_interface(db_manager, evaluator):
                 
                 contact_info = evaluation.get("contact_information", {})
                 
-                recommendation = final_eval.get("recommendation", "unknown")
-                needs_interview = recommendation in ["strong_hire", "hire"] and (contact_info.get('email') or contact_info.get('telegram'))
+                score = final_eval.get("total_score", 0)
+                needs_interview = score >= 50 and (contact_info.get('email') or contact_info.get('telegram'))
                 
                 candidate_id = db_manager.save_candidate(
                     candidate_name, 
@@ -1294,8 +1452,8 @@ def show_multiple_resumes_interface(db_manager, evaluator):
                     vacancy_id, 
                     candidate_id, 
                     evaluation,
-                    final_eval.get("total_score", 0),
-                    final_eval.get("recommendation", "unknown"),
+                    score,
+                    "hire" if score >= 50 else "no_hire",
                     final_eval.get("confidence_level", "medium"),
                     "batch_multiple_resumes",
                     needs_interview
@@ -1304,8 +1462,8 @@ def show_multiple_resumes_interface(db_manager, evaluator):
                 results.append({
                     'candidate_name': candidate_name,
                     'analysis_id': analysis_id,
-                    'score': final_eval.get("total_score", 0),
-                    'recommendation': final_eval.get("recommendation", "unknown"),
+                    'score': score,
+                    'recommendation': "hire" if score >= 50 else "no_hire",
                     'confidence': final_eval.get("confidence_level", "medium"),
                     'key_strengths': final_eval.get("key_strengths", []),
                     'critical_concerns': final_eval.get("critical_concerns", [])
@@ -1338,10 +1496,7 @@ def show_multiple_resumes_interface(db_manager, evaluator):
                 })
             else:
                 rec_emoji = {
-                    'strong_hire': '✅ Настоятельно рекомендую',
                     'hire': '✅ Рекомендую',
-                    'conditional_hire': '⚠️ Условно',
-                    'weak_hire': '⚠️ Слабо',
                     'no_hire': '❌ Не рекомендую'
                 }
                 
@@ -1583,14 +1738,15 @@ def main():
                         )
                         
                         final_eval = evaluation.get("final_evaluation", {})
-                        recommendation = final_eval.get("recommendation", "unknown")
-                        needs_interview = recommendation in ["strong_hire", "hire"] and (contact_info.get('email') or contact_info.get('telegram'))
+                        score = final_eval.get("total_score", 0)
+                        recommendation = "hire" if score >= 50 else "no_hire"
+                        needs_interview = score >= 50 and (contact_info.get('email') or contact_info.get('telegram'))
                         
                         analysis_id = db_manager.save_analysis(
                             vacancy_id,
                             candidate_id,
                             evaluation,
-                            final_eval.get("total_score", 0),
+                            score,
                             recommendation,
                             final_eval.get("confidence_level", "medium"),
                             "single",
@@ -1606,10 +1762,9 @@ def main():
                         display_results(evaluation)
 
                         final_eval = evaluation.get("final_evaluation", {})
-                        recommendation = final_eval.get("recommendation", "unknown")
-                        positive_recommendations = ["strong_hire", "hire", "conditional_hire"]
+                        score = final_eval.get("total_score", 0)
 
-                        if recommendation in positive_recommendations:
+                        if score >= 50:
                             st.markdown("---")
                             
                             contacts = {
@@ -1627,7 +1782,7 @@ def main():
                                 'vacancy_title': final_vacancy_title,
                                 'vacancy_content': final_vacancy_text
                             }
-                            display_interview_toggle(analysis_id, needs_interview, final_contacts, recommendation, db_manager, analysis_for_toggle)
+                            display_interview_toggle(analysis_id, needs_interview, final_contacts, score, db_manager, analysis_for_toggle)
                         
                         st.info(f"💾 Анализ сохранен в базе данных (ID: {analysis_id[:8]}...)")
                         

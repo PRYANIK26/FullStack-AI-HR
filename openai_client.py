@@ -6,7 +6,6 @@ from datetime import datetime
 from typing import List, Dict, Callable, Generator
 from config import Config
 
-# Настройка логгера
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s.%(msecs)03d [%(levelname)s] %(message)s',
@@ -21,7 +20,7 @@ class OpenAIClient:
         
     def get_response_sync(self, messages: List[Dict[str, str]]) -> str:
         """Синхронный запрос - получаем полный ответ сразу"""
-        request_id = int(time.time() * 1000000) % 1000000  # Уникальный ID запроса
+        request_id = int(time.time() * 1000000) % 1000000
         
         print(f"🚀 [REQ-{request_id}] Отправка синхронного запроса к OpenAI")
         start_time = time.time()
@@ -30,11 +29,10 @@ class OpenAIClient:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
-                reasoning_effort="minimal"
             )
             
             end_time = time.time()
-            response_time = (end_time - start_time) * 1000  # в миллисекундах
+            response_time = (end_time - start_time) * 1000
             content = response.choices[0].message.content.strip()
             
             print(f"✅ [REQ-{request_id}] Получен ответ за {response_time:.0f}мс (длина: {len(content)} символов)")
@@ -76,7 +74,6 @@ class OpenAIClient:
                 if chunk.choices[0].delta.content:
                     current_time = time.time()
                     
-                    # Логируем первый чанк
                     if first_chunk_time is None:
                         first_chunk_time = current_time
                         time_to_first_chunk = (first_chunk_time - start_time) * 1000
@@ -87,7 +84,6 @@ class OpenAIClient:
                     current_sentence += chunk_text
                     chunk_count += 1
                     
-                    # Проверяем, закончилось ли предложение
                     if self._is_sentence_complete(current_sentence):
                         sentence = current_sentence.strip()
                         if len(sentence) >= Config.MIN_SENTENCE_LENGTH:
@@ -97,14 +93,13 @@ class OpenAIClient:
                             sentence_callback(sentence)
                         current_sentence = ""
             
-            # Отправляем оставшийся текст, если есть
             if current_sentence.strip():
                 sentence = current_sentence.strip()
                 if len(sentence) >= Config.MIN_SENTENCE_LENGTH:
                     sentence_count += 1
                     logger.info(f"📦 [STREAM-{request_id}] Финальное предложение #{sentence_count}: '{sentence[:50]}...' (длина: {len(sentence)})")
                     sentence_callback(sentence)
-                elif sentence:  # Даже короткие остатки отправляем в конце
+                elif sentence:
                     sentence_count += 1
                     logger.info(f"📦 [STREAM-{request_id}] Короткий финальный фрагмент #{sentence_count}: '{sentence}' (длина: {len(sentence)})")
                     sentence_callback(sentence)
@@ -151,7 +146,6 @@ class OpenAIClient:
             last_chunk_time = time.time()
             sentence_count = 0
             
-            # Функция для отправки накопленного текста по таймауту
             def timeout_sender():
                 nonlocal current_sentence, timeout_triggers
                 while True:
@@ -173,7 +167,6 @@ class OpenAIClient:
                 if chunk.choices[0].delta.content:
                     current_time = time.time()
                     
-                    # Логируем первый чанк
                     if first_chunk_time is None:
                         first_chunk_time = current_time
                         time_to_first_chunk = (first_chunk_time - start_time) * 1000
@@ -185,12 +178,10 @@ class OpenAIClient:
                     last_chunk_time = current_time
                     chunk_count += 1
                     
-                    # Запускаем таймер для первого чанка
                     if timeout_thread is None:
                         timeout_thread = threading.Thread(target=timeout_sender, daemon=True)
                         timeout_thread.start()
                     
-                    # Проверяем, закончилось ли предложение
                     if self._is_sentence_complete(current_sentence):
                         sentence = current_sentence.strip()
                         if len(sentence) >= Config.MIN_SENTENCE_LENGTH:
@@ -199,12 +190,10 @@ class OpenAIClient:
                             logger.info(f"📦 [TIMEOUT-{request_id}] Предложение #{sentence_count} готово через {chunk_time:.0f}мс: '{sentence[:50]}...' (длина: {len(sentence)})")
                             sentence_callback(sentence)
                         current_sentence = ""
-                        # Перезапускаем таймер
                         if timeout_thread and timeout_thread.is_alive():
                             timeout_thread = threading.Thread(target=timeout_sender, daemon=True)
                             timeout_thread.start()
             
-            # Отправляем оставшийся текст
             if current_sentence.strip():
                 sentence = current_sentence.strip()
                 if sentence:
@@ -233,7 +222,6 @@ class OpenAIClient:
         if not text:
             return False
             
-        # Проверяем окончания предложений
         for ending in Config.SENTENCE_ENDINGS:
             if text.endswith(ending):
                 return True

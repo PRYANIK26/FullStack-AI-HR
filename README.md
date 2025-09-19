@@ -77,6 +77,14 @@ launch_back.bat
 ```bash
 launch_web.bat
 ```
+### Запуск видео-потока:
+
+1. Запустите веб-интерфейс:
+```bash
+python visual_avatar.py
+```
+
+
 
 
 ### Порядок запуска компонентов

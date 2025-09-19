@@ -5,41 +5,55 @@ from typing import Dict, List
 load_dotenv()
 
 class Config:
+    # OpenAI API
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-    OPENAI_MODEL = "gpt-5-nano"
+    OPENAI_MODEL = "gpt-4o-mini"  # Замени на gpt-5-nano когда будет доступен
     
+    # STT настройки
     STT_MODEL = "large-v2"
     STT_REALTIME_MODEL = "small"
-    STT_LANGUAGE = None
-    SILENCE_TIMEOUT = 3
+    STT_LANGUAGE = None  # Автоопределение
+    SILENCE_TIMEOUT = 2  # Секунд до обработки
     
+    # TTS настройки  
     TTS_VOICE = "ru-RU-SvetlanaNeural"
     TTS_RATE = 30
     TTS_PITCH = 0
     TTS_VOLUME = 0
     
+    # Системные промпты
     SYSTEM_PROMPT = """Ты голосовой помощник. Отвечай кратко и по делу на русском языке. 
 Твои ответы будут озвучены, поэтому избегай сложных форматирований, списков и символов.
 Говори естественно, как в живом разговоре."""
     
+    # Streaming настройки
     SENTENCE_ENDINGS = ['.', '!', '?', '...', '…']
-    MIN_SENTENCE_LENGTH = 3
-    MAX_CHUNK_WAIT_TIME = 2.0
+    MIN_SENTENCE_LENGTH = 3  # Минимальная длина предложения для TTS
+    MAX_CHUNK_WAIT_TIME = 2.0  # Максимальное время ожидания следующего чанка
     
-    MAX_HISTORY_MESSAGES = 100
+    # История
+    MAX_HISTORY_MESSAGES = 100  # Максимум сообщений в истории
 
-    VIRTUAL_CABLE_A_OUTPUT = "CABLE-A Output"
-    VIRTUAL_CABLE_B_INPUT = "CABLE-B Input"
+    # Виртуальные аудиоустройства
+    VIRTUAL_CABLE_A_OUTPUT = "CABLE-A Output"    # Откуда бот слушает Chrome
+    VIRTUAL_CABLE_B_INPUT = "CABLE-B Input"      # Куда бот говорит в Chrome
     USE_VIRTUAL_AUDIO = False
 
 class AdaptiveInterviewConfig(Config):
     """Расширенная конфигурация для адаптивного интервью"""
     
-    MAX_INTERVIEW_TIME_MINUTES = 25
-    MIN_INTERVIEW_TIME_MINUTES = 15
-    MAX_QUESTIONS_PER_INTERVIEW = 12
+    # Настройки времени интервью
+    MAX_INTERVIEW_TIME_MINUTES = 15
+    MIN_INTERVIEW_TIME_MINUTES = 5
+    MAX_QUESTIONS_PER_INTERVIEW = 15
     MIN_QUESTIONS_PER_INTERVIEW = 5
+
+    SOFT_SKILLS_TIME_THRESHOLDS = {
+        'critical': 2,  # минут, когда остается время только на 1 вопрос
+        'low': 3       # минут, когда остается время на 2 вопроса
+    }
     
+    # Настройки фаз интервью
     PHASE_SETTINGS = {
         'exploration': {
             'min_questions': 2,
@@ -73,6 +87,7 @@ class AdaptiveInterviewConfig(Config):
         }
     }
     
+    # Пороги для определения уровня кандидата
     CANDIDATE_LEVEL_THRESHOLDS = {
         'junior': {
             'max_technical_score': 5.0,
@@ -92,14 +107,16 @@ class AdaptiveInterviewConfig(Config):
         }
     }
     
+    # Настройки адаптации сложности
     DIFFICULTY_ADAPTATION = {
-        'consecutive_weak_threshold': 2,
-        'consecutive_strong_threshold': 2,
-        'weak_answer_threshold': 4.0,
-        'strong_answer_threshold': 8.0,
-        'adaptation_smoothing': 0.3
+        'consecutive_weak_threshold': 2,    # после 2 слабых ответов упрощаем
+        'consecutive_strong_threshold': 2,  # после 2 сильных ответов усложняем
+        'weak_answer_threshold': 4.0,      # оценка ≤ 4 считается слабой
+        'strong_answer_threshold': 8.0,    # оценка ≥ 8 считается сильной
+        'adaptation_smoothing': 0.3        # фактор сглаживания адаптации
     }
     
+    # Настройки переходов между фазами
     PHASE_TRANSITION_RULES = {
         'exploration_to_validation': {
             'min_questions': 2,
@@ -112,7 +129,7 @@ class AdaptiveInterviewConfig(Config):
             'no_critical_red_flags': True
         },
         'validation_to_soft_skills': {
-            'max_avg_score': 6.0,
+            'max_avg_score': 6.0,  # если не прошел в stress_test
             'min_questions': 3
         },
         'stress_test_to_soft_skills': {
@@ -125,14 +142,16 @@ class AdaptiveInterviewConfig(Config):
         }
     }
     
+    # Критерии завершения интервью
     INTERVIEW_COMPLETION_CRITERIA = {
         'max_time_exceeded': True,
         'max_questions_reached': True,
         'all_phases_completed': True,
-        'critical_red_flags_count': 5,
-        'candidate_stress_level': 'high'
+        'critical_red_flags_count': 8,     # автозавершение при 5+ красных флагах
+        'candidate_stress_level': 'high'   # завершение при высоком стрессе
     }
     
+    # Настройки обратной связи и эмоциональных реакций
     EMOTIONAL_RESPONSES = {
         'supportive_phrases': [
             "Понимаю, это сложный вопрос. Попробуем подойти с другой стороны...",
@@ -156,18 +175,19 @@ class AdaptiveInterviewConfig(Config):
         ]
     }
     
+    # Приоритеты областей проверки по типам вакансий
     VACANCY_FOCUS_AREAS = {
         'frontend': [
-            'technical_basics',
-            'practical_experience',
-            'problem_solving',
-            'soft_skills'
+            'technical_basics',  # JS, React, CSS
+            'practical_experience',  # проекты
+            'problem_solving',   # алгоритмы
+            'soft_skills'       # командная работа
         ],
         'backend': [
-            'technical_basics',
-            'system_design',
-            'problem_solving',
-            'practical_experience'
+            'technical_basics',  # языки, фреймворки
+            'system_design',    # архитектура
+            'problem_solving',  # алгоритмы
+            'practical_experience'  # опыт
         ],
         'fullstack': [
             'technical_basics',
@@ -176,25 +196,26 @@ class AdaptiveInterviewConfig(Config):
             'soft_skills'
         ],
         'mobile': [
-            'technical_basics',
+            'technical_basics',  # iOS/Android
             'practical_experience',
             'problem_solving',
             'soft_skills'
         ],
         'devops': [
-            'system_design',
-            'technical_basics',
-            'problem_solving',
-            'soft_skills'
+            'system_design',    # инфраструктура
+            'technical_basics', # инструменты
+            'problem_solving',  # troubleshooting
+            'soft_skills'      # коммуникация с командами
         ],
         'qa': [
-            'technical_basics',
-            'problem_solving',
+            'technical_basics', # тестирование
+            'problem_solving',  # поиск багов
             'practical_experience',
             'soft_skills'
         ]
     }
     
+    # Ключевые слова для определения типа вакансии
     VACANCY_TYPE_KEYWORDS = {
         'frontend': ['frontend', 'фронтенд', 'react', 'vue', 'angular', 'javascript', 'js', 'css', 'html'],
         'backend': ['backend', 'бэкенд', 'python', 'java', 'node', 'api', 'database', 'server'],
@@ -204,12 +225,13 @@ class AdaptiveInterviewConfig(Config):
         'qa': ['qa', 'тестиров', 'test', 'quality assurance']
     }
     
+    # Настройки интеграции с HR-анализом
     HR_ANALYSIS_INTEGRATION = {
-        'max_concerns_to_address': 3,
-        'concern_validation_questions': 2,
-        'strength_validation_questions': 1,
-        'concern_priority_boost': 2.0,
-        'fallback_plan_areas': [
+        'max_concerns_to_address': 3,       # максимум concerns для проверки
+        'concern_validation_questions': 2,   # вопросов на каждый concern
+        'strength_validation_questions': 1,  # вопросов на каждую strength
+        'concern_priority_boost': 2.0,      # приоритет concern-вопросов
+        'fallback_plan_areas': [            # если HR-анализ недоступен
             'general_background',
             'technical_basics', 
             'practical_experience',
@@ -217,11 +239,12 @@ class AdaptiveInterviewConfig(Config):
         ]
     }
     
+    # Настройки профилирования кандидата
     CANDIDATE_PROFILING = {
         'confidence_calculation': {
             'questions_for_stable_average': 3,
             'smoothing_factor': 0.3,
-            'outlier_threshold': 2.0
+            'outlier_threshold': 2.0  # стандартные отклонения
         },
         'learning_indicators': {
             'curiosity_keywords': ['интересно', 'хочу узнать', 'изучу', 'почитаю'],
@@ -235,6 +258,7 @@ class AdaptiveInterviewConfig(Config):
         }
     }
     
+    # Настройки отчетности
     REPORTING_CONFIG = {
         'score_weights': {
             'technical_score': 0.4,
@@ -244,15 +268,15 @@ class AdaptiveInterviewConfig(Config):
             'soft_skills': 0.1
         },
         'recommendation_thresholds': {
-            'strong_hire': 80,
-            'hire': 65,
-            'conditional_hire': 50,
-            'no_hire': 0
+            'strong_hire': 80,      # >= 80 баллов
+            'hire': 65,             # 65-79 баллов  
+            'conditional_hire': 50, # 50-64 балла
+            'no_hire': 0           # < 50 баллов
         },
         'red_flag_impact': {
-            'critical': -20,
-            'major': -10,
-            'minor': -5
+            'critical': -20,        # критичные флаги
+            'major': -10,          # серьезные флаги
+            'minor': -5            # незначительные флаги
         }
     }
     
@@ -270,7 +294,7 @@ class AdaptiveInterviewConfig(Config):
             if any(keyword in text for keyword in keywords):
                 return vacancy_type
         
-        return 'fullstack'
+        return 'fullstack'  # default
     
     @classmethod
     def get_focus_areas_for_vacancy(cls, vacancy_type: str) -> List[str]:
@@ -293,11 +317,13 @@ class AdaptiveInterviewConfig(Config):
         if transition_key in cls.PHASE_TRANSITION_RULES:
             rules = cls.PHASE_TRANSITION_RULES[transition_key]
             
+            # Проверяем все условия
             for condition, value in rules.items():
                 if condition == 'min_questions' and phase_stats.get('questions_asked', 0) < value:
                     return False
                 elif condition == 'min_avg_score' and phase_stats.get('avg_score', 0) < value:
                     return False
+                # Дополнительные условия можно добавить здесь
             
             return True
         
